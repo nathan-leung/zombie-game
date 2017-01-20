@@ -20,6 +20,6 @@ extern uint8_t INT0_done;
 extern void INT0_Init(void);
 extern void EINT3_IRQHandler(void);
 
-extern volatile int bomb_detonated;
+extern volatile int button_pressed;
 
 #endif

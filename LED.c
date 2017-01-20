@@ -56,7 +56,7 @@ void LED_Out(unsigned int value) {
   int i;
 
   for (i = 0; i < LED_NUM; i++) {
-    if (value & (1<<i)) {
+    if (value > i) {
       LED_On (i);
     } else {
       LED_Off(i);

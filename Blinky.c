@@ -1,26 +1,25 @@
 /*----------------------------------------------------------------------------
- * Name:    Blinky.c
- * Purpose: LED Flasher
- * Note(s): possible defines set in "options for target - C/C++ - Define"
- *            __USE_LCD   - enable Output on LCD
+ * Name:    Zombie Survival.c
  *----------------------------------------------------------------------------
- * This file is part of the uVision/ARM development tools.
- * This software may only be used under the terms of a valid, current,
- * end user licence from KEIL for a compatible version of KEIL software
- * development tools. Nothing else gives you the right to use this software.
+ * See how well you fare against a horde of zombies!
+ * Joystick : Control the player
+ * INT0 : Throw grenade
  *
- * This software is supplied "AS IS" without warranties of any kind.
+ * Made by:
+ *  Ilia Poretski - 20571527
+ *  Nathan Leung - 20554488
  *
- * Copyright (c) 2008-2011 Keil - An ARM Company. All rights reserved.
  *----------------------------------------------------------------------------*/
 #include <RTL.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "LPC17xx.H"                         /* LPC17xx definitions           */
 #include "GLCD.h"
 #include "Serial.h"
 #include "LED.h"
 #include "ADC.h"
 #include "flags.h"
+#include "JOYSTICK.h"
 #include "JOYSTICK.h"
 #include "uart.h"
 #include <math.h>
@@ -31,30 +30,30 @@
 
 
 /****************** TO DO LIST **********************/
-//Add mutex for all GLCD calling
-//Add INT0 Button implementation
 //Fix Zombies that aren't being erased when killed
-//Make Zombies spawn in the corners
-//Change zombie/human to stack memory instead of heap
 //Check if mutexes are needed for assignments
-//Switch Timer to RIT timer
-//Check if its okay to unblock each task's semaphore individually (essentially making the program sequential)
-//A semaphore array cannot have its address set.
-//Instead of shifting the arrays, copy a zombie into a different
 //Make a "draw task" dedicated to drawing everything? (Separates drawing from game logic)
-//Score
-//Game over screen
+//Score (Time + Number of Zombies Killed * 100)?
 //draw floor
 //zombie collision
+//Draw Zombies overtop of pickups
+//Zombies drop things when killed? (nah) maybe blood spill
+//Reinforced Zombies that take two explosions to kill but move slower
+//Animate Zombies spawning
+//Change difficulty: make more zombies spawn but have them go slower?
+
 
 /***************** BUGS ******************************/
-//CRASHES AT > 4 zombies
-
+//CRASHES AT > 7 Zombies
+//Killing a lot of zombies at once causes the system to crash
 //zombie clears rect goes over other
 //double zombie spawn
-
+//Handle explosion at the same time a zombie touches you. -> explosion
+//Game crashes if you die with a large number of zombies on the field
 // sometimes zombie picture doesnt get removed / can be fixed by clearing whole screen
 // clock slowdown?
+// bomb crosses over edge to other side (try exploding near side with serial cable)
+
 
 /***************** MACROS ************************/
 #define __FI        1                       /* Font index 16x24               */
@@ -85,7 +84,7 @@
 #define ZOMBIE_AREA 200
 #define PICKUP_AREA 49
 
-#define MAX_ZOMBIES 3
+#define MAX_ZOMBIES 15
 #define MAX_PICKUPS 10
 
 #define BOMB_RANGE 50.0
@@ -93,8 +92,13 @@
 #define BOMB_D_WIDTH 10
 #define BOMB_D_AREA 100
 
+
+
 #undef PRINT_ENABLE
 #undef PRINT_ENABLE_LOOPS
+
+
+
 
 
 /******************* STRUCTS *******************/
@@ -102,12 +106,8 @@
 typedef struct {
 	int x_pos;
 	int y_pos;
-	//int width;
-	//int height;
-	
+	int bombs;
 	int speed;
-	int lives;
-	
 } human_t;
 
 
@@ -115,7 +115,7 @@ typedef struct {
 	uint16_t x_pos;
 	uint16_t y_pos;
 	//int height;
-	
+	uint8_t arm_positions;
 	float speed;
 } zombie_t;
 
@@ -123,15 +123,11 @@ typedef struct {
 typedef struct {
 	uint16_t x_pos;
 	uint16_t y_pos;
-	
-	int type;
-
 } pickup_t;
 
 //TODO: Maybe a struct which holds the array of zombies AND num_zombies variable
 
 /****************** GLOBAL VARIABLES *******************/
-
 //BITMAPS
 unsigned short human_map[HUMAN_AREA];
 unsigned short gun_map[GUN_AREA];
@@ -149,20 +145,104 @@ unsigned short bomb_map[] = {0,0,1,1,1,1,1,0,0,
 														 1,1,2,2,3,2,2,1,1,
 														 0,1,1,2,2,2,1,1,0,
 														 0,0,1,1,1,1,1,0,0};
+
+unsigned short hand_map[] = {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x1123,0x8E2,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x881,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x861,0x19E4,0x00,0x2265,0x5E6E,0x44CB,0x00,0x00,0x3388,0x00,0x22A6,0x2265,0x00,0x2265,0x562E,0x4DAD,0x1163,0x00,0x19C4,0x2286,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x19E4,0x450B,0x19C4,0x2B47,0x564E,0x4D8C,0x00,0x2265,0x562E,0x861,0x44AA,0x562E,0x00,0x3C29,0x5E6E,0x5E6E,0x2B47,0x00,0x4DAD,0x4D4C,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x8E2,0x44CB,0x3C29,0x4DAD,0x564E,0x450B,0x00,0x448A,0x562E,0x1123,0x450B,0x4D4C,0x8E2,0x4D4C,0x564E,0x564E,0x44CB,0x00,0x4DAD,0x4D4C,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x450B,0x564E,0x564E,0x562E,0x4D8C,0x8E2,0x4D8C,0x5E6E,0x3C29,0x4D4C,0x3368,0x2265,0x5E6E,0x562E,0x562E,0x562E,0x19C4,0x44CB,0x4D4C,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x3C29,0x5E6E,0x562E,0x562E,0x564E,0x3388,0x44CB,0x562E,0x5E6E,0x4D4C,0x1102,0x44CB,0x564E,0x562E,0x562E,0x564E,0x448A,0x3C29,0x55ED,0x881,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x2B27,0x564E,0x562E,0x562E,0x562E,0x564E,0x560D,0x564E,0x4D4C,0x33C9,0x450B,0x564E,0x562E,0x562E,0x562E,0x562E,0x562E,0x4D4C,0x4DAD,0x861,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x19C4,0x564E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x560D,0x564E,0x564E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x564E,0x450B,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x8C2,0x55ED,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x564E,0x448A,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x4D4C,0x564E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x564E,0x33C9,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x3C29,0x5E6E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x564E,0x2B27,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x2B27,0x564E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x564E,0x2265,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x2265,0x564E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x564E,0x19E4,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x2286,0x564E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x564E,0x5E8F,0x1A05,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x2AC6,0x5E6E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x55ED,0x450B,0x3C29,0x2B47,0x3C6A,0x3368,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x2B27,0x564E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x4DAD,0x2AE7,0x19E4,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x44CB,0x564E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x564E,0x55ED,0x1163,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x2AE7,0x5E6E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x564E,0x44CB,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x8E2,0x55ED,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x5E8F,0x22A6,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x3C6A,0x5E6E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x564E,0x450B,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x2265,0x5E6E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x564E,0x19E4,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x861,0x4DAD,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x564E,0x33C9,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x3BE9,0x564E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x564E,0x4D4C,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x1984,0x562E,0x564E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x1984,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x3C6A,0x564E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x5E6E,0x2B27,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x450B,0x564E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x564E,0x448A,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x8A1,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x564E,0x4DAD,0x861,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x19E4,0x5E6E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x564E,0x1984,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x2B27,0x564E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x564E,0x2B27,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x3C6A,0x564E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x564E,0x3C6A,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x4D4C,0x564E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x564E,0x19E4,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x8C2,0x560D,0x562E,0x562E,0x562E,0x562E,0x562E,0x564E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x564E,0x4DAD,0x1163,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x1A05,0x5E6E,0x562E,0x562E,0x562E,0x564E,0x564E,0x4D4C,0x560D,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x564E,0x560D,0x2225,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x2B27,0x5E8F,0x562E,0x562E,0x55ED,0x450B,0x562E,0x2265,0x3C6A,0x564E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x564E,0x5E6E,0x564E,0x2B47,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x3C6A,0x5E6E,0x562E,0x55ED,0x448A,0x2225,0x19E4,0x881,0x1163,0x560D,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x564E,0x55ED,0x44CB,0x3C6A,0x55ED,0x5E6E,0x448A,0x8A1,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x4D8C,0x562E,0x562E,0x562E,0x564E,0x564E,0x3BE9,0x00,0x00,0x3388,0x5E6E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x2AC6,0x450B,0x2B27,0x3388,0x3C29,0x44AA,0x564E,0x5E8F,0x3C29,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x861,0x55ED,0x562E,0x562E,0x562E,0x562E,0x562E,0x564E,0x1163,0x00,0x1A05,0x564E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x564E,0x448A,0x8E2,0x3C29,0x5E8F,0x564E,0x562E,0x562E,0x564E,0x44CB,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x2B47,0x564E,0x562E,0x562E,0x562E,0x562E,0x564E,0x2265,0x00,0x19E4,0x5E8F,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x564E,0x2AC6,0x450B,0x564E,0x562E,0x562E,0x562E,0x5E8F,0x3C6A,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x4D4C,0x564E,0x562E,0x562E,0x562E,0x5E6E,0x2B27,0x00,0x19E4,0x5E6E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x55ED,0x55ED,0x562E,0x562E,0x562E,0x564E,0x4D4C,0x2B27,0x5E6E,0x5E6E,0x564E,0x564E,0x3C6A,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x1A05,0x564E,0x562E,0x562E,0x562E,0x564E,0x19E4,0x00,0x2225,0x564E,0x562E,0x562E,0x562E,0x562E,0x562E,0x562E,0x564E,0x562E,0x562E,0x564E,0x44AA,0x448A,0x5E8F,0x560D,0x564E,0x564E,0x564E,0x2B27,0x19E4,0x3388,0x3C6A,0x1A05,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x3C6A,0x5E6E,0x562E,0x564E,0x560D,0x8E2,0x00,0x2265,0x564E,0x562E,0x562E,0x562E,0x564E,0x4D4C,0x1163,0x33C9,0x562E,0x562E,0x562E,0x55ED,0x3368,0x3C29,0x2265,0x3388,0x4D4C,0x564E,0x4D4C,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x8E2,0x55ED,0x560D,0x4DAD,0x448A,0x00,0x00,0x2265,0x564E,0x564E,0x562E,0x562E,0x564E,0x2B47,0x00,0x00,0x44CB,0x564E,0x562E,0x55ED,0x2265,0x44AA,0x560D,0x4D4C,0x3C29,0x55ED,0x564E,0x1163,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x8E2,0x8E2,0x00,0x00,0x00,0x00,0x2265,0x564E,0x562E,0x564E,0x564E,0x564E,0x1984,0x00,0x00,0x19E4,0x562E,0x564E,0x44CB,0x44AA,0x5E6E,0x562E,0x564E,0x562E,0x562E,0x564E,0x2265,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x2265,0x5E6E,0x55ED,0x3368,0x2B27,0x450B,0x8A1,0x00,0x00,0x00,0x448A,0x5E8F,0x3C6A,0x3C6A,0x564E,0x562E,0x562E,0x562E,0x562E,0x564E,0x1163,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x2265,0x564E,0x55ED,0x4D4C,0x3C29,0x19C4,0x00,0x00,0x00,0x00,0x2B27,0x5E6E,0x55ED,0x3C6A,0x3C6A,0x55ED,0x564E,0x562E,0x5E6E,0x33C9,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x22A6,0x564E,0x562E,0x564E,0x5E8F,0x33C9,0x00,0x00,0x00,0x00,0x2225,0x5E8F,0x564E,0x5E6E,0x4D4C,0x3C29,0x44CB,0x560D,0x4D4C,0x8A1,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x2AE7,0x5E8F,0x562E,0x562E,0x564E,0x44CB,0x00,0x00,0x00,0x00,0x1123,0x44AA,0x3C6A,0x4D4C,0x562E,0x564E,0x3388,0x8A1,0x8E2,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x19E4,0x5E6E,0x562E,0x3C29,0x2265,0x1102,0x00,0x00,0x00,0x00,0x8C2,0x3C6A,0x4D8C,0x55ED,0x562E,0x564E,0x3BE9,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x8A1,0x55ED,0x55ED,0x4D4C,0x560D,0x44CB,0x8A1,0x00,0x00,0x00,0x2B47,0x5E8F,0x562E,0x562E,0x562E,0x564E,0x2AC6,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x44AA,0x564E,0x564E,0x562E,0x5E6E,0x1A05,0x00,0x00,0x00,0x4D4C,0x562E,0x562E,0x562E,0x562E,0x564E,0x1984,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x2B27,0x5E8F,0x562E,0x562E,0x5E8F,0x2B27,0x00,0x00,0x8E2,0x560D,0x564E,0x562E,0x562E,0x564E,0x55ED,0x8A1,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x8A1,0x4D8C,0x5E8F,0x5E8F,0x4D8C,0x1102,0x00,0x00,0x19E4,0x564E,0x564E,0x562E,0x564E,0x564E,0x2AC6,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x1163,0x3388,0x2B47,0x1102,0x00,0x00,0x00,0x00,0x22A6,0x4D4C,0x4DAD,0x4DAD,0x2B47,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+};
+unsigned short skull_map[] = {0x0,0x0,0x8C51,0x9492,0x861,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x861,0xA514,0x8430,0x0,0x0,
+0x0,0x18E3,0x8C51,0x52AA,0x8430,0x1082,0x0,0x0,0x4A69,0x738E,0x738E,0x4A69,0x0,0x0,0x18E3,0x8C51,0x4A69,0x9492,0x1082,0x0,
+0x0,0x9CF3,0x4A69,0x861,0x52AA,0x9492,0x630C,0x9492,0x6B6D,0x39E7,0x31A6,0x6B6D,0x9492,0x630C,0x9492,0x4A69,0x1082,0x5ACB,0x8C51,0x0,
+0x0,0x630C,0x8C51,0x9492,0x7BCF,0x31A6,0xAD75,0x4228,0x2104,0x39E7,0x4228,0x2104,0x4228,0xAD75,0x31A6,0x8430,0x9492,0x8C51,0x5ACB,0x0,
+0x0,0x0,0x0,0x0,0x39E7,0x8C51,0xA514,0x738E,0xB596,0xAD75,0xB596,0xB596,0x6B6D,0xAD75,0x8430,0x2965,0x0,0x0,0x0,0x0,
+0x0,0x0,0x0,0x0,0x1082,0x6B6D,0xBDD7,0xA514,0xB596,0x9CF3,0x9CF3,0xAD75,0xA514,0xBDD7,0x738E,0x1082,0x0,0x0,0x0,0x0,
+0x0,0x1082,0x18E3,0x738E,0x9492,0x52AA,0xBDD7,0xBDD7,0x39E7,0x18E3,0x18E3,0x4228,0xB596,0xBDD7,0x52AA,0x9492,0x738E,0x18E3,0x1082,0x0,
+0x9492,0x8C51,0x8C51,0x4A69,0x31A6,0xA514,0xEF5D,0x6B6D,0x2104,0x9CF3,0x9CF3,0x18E3,0x7BCF,0xF7BE,0x9CF3,0x39E7,0x4A69,0x9492,0x8C51,0x9492,
+0x9492,0x2965,0x1082,0x8430,0xB596,0xB596,0x2104,0x0,0x31A6,0xDF1B,0xDF1B,0x2965,0x0,0x2104,0xBDD7,0xAD75,0x83EF,0x861,0x31A6,0x9492,
+0x2965,0x8430,0x8430,0x39E7,0x630C,0x31A6,0x4228,0x9492,0x18E3,0x9492,0x9492,0x18E3,0x9492,0x31A6,0x4228,0x52AA,0x4228,0x8430,0x8430,0x2965,
+0x800,0x9492,0x6B6D,0x0,0x630C,0x52AA,0xD6BA,0xFFFF,0xA514,0x0,0x0,0xB596,0xFFFF,0xD6BA,0x630C,0x5ACB,0x0,0x630C,0x8C51,0x0,
+0x0,0x0,0x0,0x0,0xB596,0x9492,0xFFFF,0xFFFF,0xFFFF,0x18E3,0x2965,0xFFFF,0xFFFF,0xF7BE,0x9CF3,0xAD75,0x0,0x0,0x0,0x0,
+0x0,0x0,0x0,0x4A69,0x9CF3,0x6B6D,0x4228,0x8430,0x8430,0x861,0x861,0x8430,0x8430,0x4228,0x738E,0x9CF3,0x39E7,0x0,0x0,0x0,
+0x0,0x0,0x0,0x738E,0x7BCF,0x4A69,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x5ACB,0x8430,0x6B6D,0x0,0x0,0x0,
+0x0,0x0,0x0,0x7BCF,0x9492,0x2965,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x31A6,0x8C51,0x7BCF,0x0,0x0,0x0,
+0x0,0x0,0x0,0x7BCF,0x630C,0x18E3,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x2104,0x5ACB,0x7BCF,0x0,0x0,0x0,
+0x0,0x0,0x0,0x52AA,0x630C,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x630C,0x52AA,0x0,0x0,0x0,
+0x0,0x0,0x0,0x861,0x9492,0x2965,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x2965,0x9CF3,0x861,0x0,0x0,0x0,
+0x0,0x0,0x0,0x0,0x2104,0x9CF3,0x630C,0x1082,0x0,0x0,0x0,0x0,0x18E3,0x5ACB,0x9CF3,0x2104,0x0,0x0,0x0,0x0,
+0x0,0x0,0x0,0x0,0x0,0x861,0x630C,0x9492,0x8C51,0x83EF,0x8430,0x9492,0x9492,0x630C,0x1061,0x0,0x0,0x800,0x800,0x2800
+};
+
 unsigned short bomb_w_map[BOMB_D_AREA];
 unsigned short bomb_r_map[BOMB_D_AREA];
 unsigned short bomb_o_map[BOMB_D_AREA]; 
 unsigned short bomb_y_map[BOMB_D_AREA]; 
 
 //VARIABLES
-//TODO make zombies_array and human NOT pointers with heap memory
+
 volatile zombie_t zombies_array[MAX_ZOMBIES];
 OS_TID zombie_tasks[MAX_ZOMBIES]; //Task IDs for each zombie_task
 volatile human_t human;
-volatile int num_zombies = 0;
+volatile short num_zombies = 0;
 volatile pickup_t pickups_array[MAX_PICKUPS]; 
-int lives_left = 0;
-
+short num_pickups = 0;
+volatile bool can_bomb = false;
+volatile bool game_playing = true;
+volatile short zombies_killed = 0;
+														 
+float max_zombie_speed = 3.0;				
+float min_zombie_speed = 2.0;		
 
 //MUTEXES AND SEMAPHORES
 
@@ -170,9 +250,10 @@ int lives_left = 0;
 	OS_MUT human_mut; // 'human'
 	OS_MUT zombies_mut; // 'zombies_array'
 	OS_MUT num_zombies_mut; // 'num_zombies'
+	OS_MUT pickups_mut;
 	
 	//Peripheral Mutexes
-	OS_MUT led_mut; 
+	OS_MUT LED_mut; 
 	OS_MUT joystick_mut;
 	OS_MUT GLCD_mut;
 	
@@ -180,28 +261,99 @@ int lives_left = 0;
 	OS_SEM human_task_sem; // ' human_task'
 	OS_SEM zombie_task_sem[MAX_ZOMBIES]; // 'zombie_task'
 	OS_SEM button_sem;
-	
+	OS_SEM pickup_task_sem;
+	OS_SEM collision_detect_sem;
+	OS_SEM iteration_sem;
 	
 
+//TASKS
+
+OS_TID pickup_tsk, human_tsk, button_tsk, led_tsk, collision_tsk;
+	
+//Score related
+char killed[3];
 
 /******************* FUNCTIONS *********************/
 
-// Kills a specific zombie
-void kill_zombie(int z_index){
-	int i;
-	#ifdef PRINT_ENABLE
-	printf("Killing zombie #");
-	for(i=0; i< z_index; i++){
-		printf("1");
-	}
-	printf("\nout of ");
-	for(i = 0; i< num_zombies; i++) {
-		printf("1");
-	}
-	printf("\n");
-	#endif
+//returns quadrant that the human is in
+// (320, 0)         (320,230)
+// X----------------X
+// |				|				|
+// |				|				| 
+// |		2		|		3		| 
+// |				|				| 
+// |________|_______| 
+// |				|				| 
+// |				|				| 
+// |		1		|		4		| 
+// |				|				| 
+// |				|				| 
+// X----------------X
+// (0,0)            (0, 240)
+short get_human_quadrant(void){
+	human_t local_human;
 	
-	if(z_index < num_zombies){
+	os_mut_wait(&human_mut, 0xffff);
+	local_human = human;
+	os_mut_release(&human_mut);
+	
+	if(local_human.x_pos <= 160)
+		if(local_human.y_pos <= 120)
+			return 1;
+		else
+			return 4;
+	else
+		if(local_human.y_pos <= 120)
+			return 2;
+		else
+			return 3;
+	
+}
+
+//Initializes a zombie
+//Returns the index of the new zombie, or -1 if the maximum number of zombies are on screen
+signed int zombie_init(void){
+		short local_num_zombies;
+		local_num_zombies = num_zombies;
+		if(num_zombies < MAX_ZOMBIES){
+			short quadrant = get_human_quadrant();
+			
+			os_mut_wait(&zombies_mut, 0xffff);
+			//Spawn zombie in appropriate corner
+				if(quadrant == 1 || quadrant == 4)
+					zombies_array[num_zombies].x_pos = 290;
+				else
+					zombies_array[num_zombies].x_pos = 20;
+				if(quadrant == 1 || quadrant == 2)
+					zombies_array[num_zombies].y_pos = 210;
+				else
+					zombies_array[num_zombies].y_pos = 20;
+				//Set zombie stats
+				zombies_array[num_zombies].speed = (float) ( ( (double)rand()/(double)(RAND_MAX)) * (max_zombie_speed - min_zombie_speed) + min_zombie_speed);
+				zombies_array[num_zombies].arm_positions = 0;
+			os_mut_release(&zombies_mut);
+			
+				//Increment num_zombies
+			os_mut_wait(&num_zombies_mut, 0xffff);
+				num_zombies++;
+			os_mut_release(&num_zombies_mut);
+				
+		//Return the index of the zombie
+		return local_num_zombies;
+	}
+	return -1; //No more zombies can spawn
+	
+}
+
+
+
+// Kills a specific zombie
+void kill_zombie(short z_index){
+		if(game_playing)
+	{
+		zombies_killed++;
+	}
+	if(z_index < num_zombies){ //Make sure it is a current zombie
 		zombie_t dead_zombie;
 		
 		os_mut_wait(&zombies_mut, 0xffff);
@@ -212,30 +364,33 @@ void kill_zombie(int z_index){
 		GLCD_Bitmap (dead_zombie.x_pos, dead_zombie.y_pos, ZOMBIE_WIDTH, ZOMBIE_HEIGHT, (unsigned char *)clear_rect_map);
 		os_mut_release(&GLCD_mut);
 		
-		
+		//If the dead zombie is not the last one
 		if(z_index != num_zombies-1){
+			//Move the last zombie in the array to this index
 			os_mut_wait(&zombies_mut, 0xffff);
 				zombies_array[z_index] = zombies_array[num_zombies-1];
 			os_mut_release(&zombies_mut);
 			
+			//Decrement num_zombies
 			os_mut_wait(&num_zombies_mut, 0xffff);
 				num_zombies--;
 			os_mut_release(&num_zombies_mut);
-
-			os_tsk_delete(zombie_tasks[num_zombies]);
-			return;
-		} else if (z_index != 0) {
-			printf("Case 2");			os_mut_wait(&zombies_mut, 0xffff);
-			os_mut_release(&zombies_mut);
 			
+			//Delete the last task
+			os_tsk_delete(zombie_tasks[num_zombies]);
+			return;
+		} else if (z_index != 0) { // If the zombie is the last to spawn, but not the only one
+			
+			//Decrement num_zombies
 			os_mut_wait(&num_zombies_mut, 0xffff);
 				num_zombies--;
 			os_mut_release(&num_zombies_mut);
 
+			//Delete the task
 			os_tsk_delete(zombie_tasks[num_zombies]);
 			return;
-		} else {
-			int first_zombie_index;
+		} else { //If there is only one zombie
+			short first_zombie_index;
 			os_mut_wait(&num_zombies_mut, 0xffff);
 				num_zombies--;
 			os_mut_release(&num_zombies_mut);
@@ -262,7 +417,7 @@ void kill_zombie(int z_index){
 
 //Detects if the human is touching one of the zombies
 void detect_collision( void ){
-	int i;
+	short i;
 	human_t local_human;
 	zombie_t local_zombie;
 	
@@ -272,87 +427,18 @@ void detect_collision( void ){
 
 	
 	for(i=0; i<num_zombies; i++){
-		int j;
 		
 		os_mut_wait(&zombies_mut, 0xffff);
 		local_zombie = zombies_array[i];
 		os_mut_release(&zombies_mut);
 
+		//Detects Collision
 		if( local_zombie.x_pos < local_human.x_pos + HUMAN_WIDTH && local_zombie.x_pos > local_human.x_pos - ZOMBIE_WIDTH 
 			&& local_zombie.y_pos > local_human.y_pos - ZOMBIE_HEIGHT && local_zombie.y_pos < local_human.y_pos + HUMAN_HEIGHT){	
-			
-				#ifdef PRINT_ENABLE
-					printf("Collision Detected!\n");
-				#endif
+
 				
-				if(local_human.lives > 0){
-					//kill all zombies but 1
-					//reset human and zombie coordinates						
-					//OR
-					//human explodes and loses a life
-					//zombies continue
-					
-				#ifdef PRINT_ENABLE
-					printf("Running Algorithm\n");
-				#endif
-					
-					
-					//Clears the human
-					os_mut_wait(&GLCD_mut, 0xffff);
-						GLCD_Bitmap (local_human.x_pos - GUN_WIDTH, local_human.y_pos-  GUN_WIDTH, 20, 20, (unsigned char *)clear_rect_map);
-					os_mut_release(&GLCD_mut);
-					 
-					
-					//Reset human coordinates
-					os_mut_wait(&human_mut, 0xffff);
-						human.x_pos = 10;
-						human.y_pos = 10;
-						--(human.lives);
-					os_mut_release(&human_mut);
-					
-				#ifdef PRINT_ENABLE
-					printf("Killing Zombies...\n");
-				#endif
-					//Kill all the zombies but the first
-					for( j= num_zombies-1 ; j >= 0; j--){
-						kill_zombie(j);
-					}
-					#ifdef PRINT_ENABLE
-						printf("Done Killing\n");
-					#endif
-					
-					//Clear the first zombie and rest its coordinates/stats
-// 					os_mut_wait(&zombies_mut, 0xffff);
-// 						#ifdef PRINT_ENABLE
-// 							printf("Got the zombies mutex\n");
-// 						#endif
-// 					
-// 					
-// 						
-// 						os_mut_wait(&GLCD_mut, 0xffff);
-// 						GLCD_Bitmap (zombies_array[0].x_pos, zombies_array[0].y_pos, ZOMBIE_WIDTH, ZOMBIE_HEIGHT, (unsigned char *)clear_rect_map);
-// 						os_mut_release(&GLCD_mut);
-// 					
-// 						#ifdef PRINT_ENABLE
-// 							printf("Cleared bitmap\n");
-// 						#endif	
-// 						zombies_array[0].x_pos = 100;
-// 						zombies_array[0].y_pos = 100;
-// 						zombies_array[0].speed = 3.0;
-// 					#ifdef PRINT_ENABLE
-// 							printf("Set values\n");
-// 						#endif	
-// 					os_mut_release(&zombies_mut);
-					
-					#ifdef PRINT_ENABLE
-						printf("Erased and reset first zombie\n");
-					#endif
-					
-					//Turn off an LED to indicate a life lost
-					LED_Off(local_human.lives-1);
-				} else {
-					//Game over
-				}
+				//End the game
+				game_playing = false;
 				return;
 			}
 	}
@@ -365,84 +451,98 @@ void human_init(void){
 		human.x_pos = 10;
 		human.y_pos = 10;
 		human.speed = 10;
-		human.lives = 8;
+		human.bombs = 0;
 		os_mut_release(&human_mut);
 }
 
 
 
 
-//returns quadrant that the human is in
-// (320, 0)         (320,230)
-// X----------------X
-// |				|				|
-// |				|				| 
-// |		2		|		3		| 
-// |				|				| 
-// |________|_______| 
-// |				|				| 
-// |				|				| 
-// |		1		|		4		| 
-// |				|				| 
-// |				|				| 
-// X----------------X
-// (0,0)            (0, 240)
-int get_human_quadrant(void){
-	human_t local_human;
-	
-	os_mut_wait(&human_mut, 0xffff);
-	local_human = human;
-	os_mut_release(&human_mut);
-	
-	if(local_human.x_pos <= 160)
-		if(local_human.y_pos <= 120)
-			return 1;
-		else
-			return 4;
-	else
-		if(local_human.y_pos <= 120)
-			return 2;
-		else
-			return 3;
-	
-}
-
-//Initializes a zombie
-//Returns the index of the new zombie, or -1 if the maximum number of zombies are on screen
-signed int zombie_init(void){
-		int local_num_zombies;
-		local_num_zombies = num_zombies;
-		if(num_zombies < MAX_ZOMBIES){
-			int quadrant = get_human_quadrant();
-			
-			os_mut_wait(&zombies_mut, 0xffff);
-				//zombies_array[num_zombies] = (zombie_t *) malloc(sizeof(zombie_t));
-				//TODO change x and y positions so that zombies spawn randomly in one of the four corners
-				//make sure that the player is not in one of the corners that they will spawn
-				if(quadrant == 1 || quadrant == 4)
-					zombies_array[num_zombies].x_pos = 310;
-				else
-					zombies_array[num_zombies].x_pos = 10;
-				if(quadrant == 1 || quadrant == 2)
-					zombies_array[num_zombies].y_pos = 230;
-				else
-					zombies_array[num_zombies].y_pos = 10;
-				
-				zombies_array[num_zombies].speed = 3.0;
-			os_mut_release(&zombies_mut);
-			
-			os_mut_wait(&num_zombies_mut, 0xffff);
-				num_zombies++;
-			os_mut_release(&num_zombies_mut);
-		
-		return local_num_zombies;
-	}
-	return -1; //No more zombies can spawn
-	
-}
 
 /************************** TASKS **************************/
+//Pickup Task
+__task void pickup_task( void* void_ptr ){
+	int pickup_counter = 201;  
+	int i, j;
+	human_t local_human;
+	pickup_t local_pickup;
+	int pickup_spawn_freq = 200;
+	while(1){
+		os_sem_wait(&pickup_task_sem, 0xffff);
 
+		pickup_counter++;
+		
+		if(pickup_counter < pickup_spawn_freq) pickup_counter++;
+		else {
+			pickup_counter = 0;
+			if(num_pickups < MAX_PICKUPS){
+				//Spawn a pickup
+				os_mut_wait(&pickups_mut, 0xffff);
+				pickups_array[num_pickups].x_pos = rand()%280 + 20;
+				pickups_array[num_pickups].y_pos = rand()%200 + 20;
+				num_pickups++;
+				os_mut_release(&pickups_mut);
+			}if(pickup_spawn_freq < 500){
+				pickup_spawn_freq += 2;
+			}
+		}
+		
+		os_mut_wait(&human_mut, 0xffff);
+		local_human = human;
+		os_mut_release(&human_mut);
+		
+		if(local_human.bombs < 8){ //Make sure human has room for bombs
+			for(i=0; i< num_pickups; i++){
+				os_mut_wait(&pickups_mut, 0xffff);
+				local_pickup = pickups_array[i];
+				os_mut_release(&pickups_mut);
+				
+				//Detect if human is touching a pickup
+				if( local_pickup.x_pos < local_human.x_pos + HUMAN_WIDTH + GUN_WIDTH && local_pickup.x_pos > local_human.x_pos - GUN_WIDTH - PICKUP_WIDTH 
+					&& local_pickup.y_pos > local_human.y_pos - GUN_WIDTH - PICKUP_HEIGHT && local_pickup.y_pos < local_human.y_pos + HUMAN_HEIGHT + GUN_WIDTH){	
+						
+						//clear the pickup
+						os_mut_wait(&GLCD_mut, 0xffff);
+						GLCD_Bitmap (local_pickup.x_pos, local_pickup.y_pos, PICKUP_WIDTH, PICKUP_HEIGHT, (unsigned char *)clear_rect_map);
+						os_mut_release(&GLCD_mut);
+						
+						//Increment the number of bombs the human has
+						os_mut_wait(&human_mut, 0xffff);
+						(human.bombs)++;
+						os_mut_release(&human_mut);
+						
+						//Shift the pickups array
+						os_mut_wait(&pickups_mut, 0xffff);
+						for(j=i; j < num_pickups-1; j++){
+							pickups_array[j] = pickups_array[j+1];
+						}
+						num_pickups--;
+						os_mut_release(&pickups_mut);
+				
+				
+				
+				}
+			
+			}
+		}
+		
+		//Draw all the pickups
+		for(i=0;i<num_pickups;i++){
+				
+				os_mut_wait(&pickups_mut, 0xffff);
+				local_pickup = pickups_array[i];
+				os_mut_release(&pickups_mut);
+
+				os_mut_wait(&GLCD_mut, 0xffff);
+				GLCD_Bitmap (local_pickup.x_pos, local_pickup.y_pos, PICKUP_WIDTH, PICKUP_HEIGHT, (unsigned char *)pickup_map);
+				os_mut_release(&GLCD_mut);
+			
+		}
+		
+		
+	}
+	
+}
 
 //Human task
 __task void human_task( void* void_ptr ) {
@@ -450,7 +550,6 @@ __task void human_task( void* void_ptr ) {
 	human_t prev_human;
 	int x, y;
 	
-	printf("Human Task\n");
 	#ifdef PRINT_ENABLE
 		printf("Human Task\n");
 	#endif
@@ -462,13 +561,11 @@ __task void human_task( void* void_ptr ) {
 		#endif
 		
 		os_sem_wait(&human_task_sem, 0xffff);
+		
 		#ifdef PRINT_ENABLE_LOOPS
 			printf("Human Task!\n");
 		#endif
-		
-		//Update human position
-		
-		
+
 		os_mut_wait(&human_mut, 0xffff);
 			prev_human = human;
 		os_mut_release(&human_mut);
@@ -486,9 +583,9 @@ __task void human_task( void* void_ptr ) {
 		//Update position with in accordance with the joystick position
 		os_mut_wait(&human_mut, 0xffff);
 		if( !((joy_status >> DOWN_POS) & 1) && prev_human.x_pos > 10) human.x_pos -= human.speed;
-		if( !((joy_status >> UP_POS) & 1) && prev_human.x_pos < 310) human.x_pos += human.speed;
+		if( !((joy_status >> UP_POS) & 1) && prev_human.x_pos < 300) human.x_pos += human.speed;
 		if( !((joy_status >> LEFT_POS) & 1) && prev_human.y_pos > 10) human.y_pos -= human.speed;
-		if( !((joy_status >> RIGHT_POS) & 1) && prev_human.y_pos < 240) human.y_pos += human.speed;
+		if( !((joy_status >> RIGHT_POS) & 1) && prev_human.y_pos < 220) human.y_pos += human.speed;
 		x = human.x_pos;
 		y = human.y_pos;
 		os_mut_release(&human_mut);
@@ -530,9 +627,6 @@ __task void human_task( void* void_ptr ) {
 				else if (x < prev_human.x_pos){
 					GLCD_Bitmap (x-GUN_WIDTH, y + GUN_HEIGHT/2, GUN_WIDTH, GUN_HEIGHT, (unsigned char *)gun_map);
 				}
-				else {
-					GLCD_Bitmap (x-GUN_WIDTH, y-GUN_WIDTH, GUN_WIDTH, GUN_HEIGHT, (unsigned char *)gun_map);
-				}
 			}
 			os_mut_release(&GLCD_mut);			
 			
@@ -550,117 +644,196 @@ __task void zombie_task( void* void_ptr ){
 	int delta_y;
 	int delta_x;
 	int x_old, y_old;
+	int new_arm_position;
 	human_t current_human;
 	zombie_t prev_zombie;
+	zombie_t next_zombie;
 	signed int zombie_index = *((signed int *)void_ptr);
 	
 	#ifdef PRINT_ENABLE
 		printf("Zombie Init.\n");
 	#endif
-	
-	// get the index for the parameters
+
 	while(1){
 		
 		#ifdef PRINT_ENABLE_LOOPS
 			printf("Zombie Task is WAITING!\n");
 		#endif
 		
-		
 			os_sem_wait(&zombie_task_sem[zombie_index], 0xffff); 
 		#ifdef PRINT_ENABLE_LOOPS
 			printf("Zombie Task!\n");
 		#endif
-		
-
-			//Check: Do I need mutexes here?
+	
+			//Get previous Zombie
 			os_mut_wait(&zombies_mut, 0xffff);
 			prev_zombie = zombies_array[zombie_index];
 			os_mut_release(&zombies_mut);
+			
+			next_zombie = prev_zombie;
 		
 			os_mut_wait(&human_mut, 0xffff);
 			current_human = human;
 			os_mut_release(&human_mut);
 			
+			//Clear the arms of the previous zombie
 			os_mut_wait(&GLCD_mut, 0xffff);
- 			GLCD_Bitmap (prev_zombie.x_pos, prev_zombie.y_pos, ZOMBIE_WIDTH, ZOMBIE_HEIGHT, (unsigned char *)clear_rect_map);
+			if(prev_zombie.arm_positions == 3){
+				GLCD_Bitmap (prev_zombie.x_pos, prev_zombie.y_pos + Z_ARM_WIDTH + Z_BODY_HEIGHT, Z_ARM_WIDTH, Z_ARM_WIDTH, (unsigned char *)clear_rect_map);
+				GLCD_Bitmap (prev_zombie.x_pos + Z_ARM_WIDTH + Z_BODY_WIDTH, prev_zombie.y_pos + Z_ARM_WIDTH + Z_BODY_HEIGHT, Z_ARM_WIDTH, Z_ARM_WIDTH, (unsigned char *)clear_rect_map);
+			}
+			else if(prev_zombie.arm_positions == 2){
+				GLCD_Bitmap (prev_zombie.x_pos + Z_ARM_WIDTH/2 + Z_BODY_WIDTH/2, prev_zombie.y_pos + Z_ARM_WIDTH + Z_BODY_HEIGHT, Z_ARM_WIDTH, Z_ARM_WIDTH, (unsigned char *)clear_rect_map);
+				GLCD_Bitmap (prev_zombie.x_pos + Z_ARM_WIDTH + Z_BODY_WIDTH, prev_zombie.y_pos + Z_ARM_WIDTH/2 + Z_BODY_HEIGHT/2, Z_ARM_WIDTH, Z_ARM_WIDTH, (unsigned char *)clear_rect_map);
+				
+			}
+			else if(prev_zombie.arm_positions == 1){
+				GLCD_Bitmap (prev_zombie.x_pos + Z_ARM_WIDTH + Z_BODY_WIDTH, prev_zombie.y_pos + Z_ARM_WIDTH + Z_BODY_HEIGHT, Z_ARM_WIDTH, Z_ARM_WIDTH, (unsigned char *)clear_rect_map);
+				GLCD_Bitmap (prev_zombie.x_pos + Z_ARM_WIDTH + Z_BODY_WIDTH, prev_zombie.y_pos, Z_ARM_WIDTH, Z_ARM_WIDTH, (unsigned char *)clear_rect_map);	
+			}
+			else if(prev_zombie.arm_positions == 8){
+				GLCD_Bitmap (prev_zombie.x_pos + Z_ARM_WIDTH + Z_BODY_WIDTH, prev_zombie.y_pos + Z_ARM_WIDTH/2 + Z_BODY_HEIGHT/2, Z_ARM_WIDTH, Z_ARM_WIDTH, (unsigned char *)clear_rect_map);
+				GLCD_Bitmap (prev_zombie.x_pos + Z_ARM_WIDTH/2 + Z_BODY_WIDTH/2, prev_zombie.y_pos, Z_ARM_WIDTH, Z_ARM_WIDTH, (unsigned char *)clear_rect_map);
+			}
+			else if(prev_zombie.arm_positions == 7){
+				GLCD_Bitmap (prev_zombie.x_pos, prev_zombie.y_pos, Z_ARM_WIDTH, Z_ARM_WIDTH, (unsigned char *)clear_rect_map);
+				GLCD_Bitmap (prev_zombie.x_pos + Z_ARM_WIDTH + Z_BODY_WIDTH, prev_zombie.y_pos, Z_ARM_WIDTH, Z_ARM_WIDTH, (unsigned char *)clear_rect_map);	
+				
+			}
+			else if(prev_zombie.arm_positions == 6){
+				GLCD_Bitmap (prev_zombie.x_pos + Z_ARM_WIDTH/2 + Z_BODY_WIDTH/2, prev_zombie.y_pos, Z_ARM_WIDTH, Z_ARM_WIDTH, (unsigned char *)clear_rect_map);
+				GLCD_Bitmap (prev_zombie.x_pos, prev_zombie.y_pos + Z_ARM_WIDTH/2 + Z_BODY_HEIGHT/2, Z_ARM_WIDTH, Z_ARM_WIDTH, (unsigned char *)clear_rect_map);	
+				
+			}
+			else if(prev_zombie.arm_positions == 5){
+				GLCD_Bitmap (prev_zombie.x_pos, prev_zombie.y_pos, Z_ARM_WIDTH, Z_ARM_WIDTH, (unsigned char *)clear_rect_map);
+				GLCD_Bitmap (prev_zombie.x_pos, prev_zombie.y_pos + Z_ARM_WIDTH + Z_BODY_HEIGHT, Z_ARM_WIDTH, Z_ARM_WIDTH, (unsigned char *)clear_rect_map);
+				
+			}
+			else if(prev_zombie.arm_positions == 4){
+				GLCD_Bitmap (prev_zombie.x_pos, prev_zombie.y_pos + Z_ARM_WIDTH/2 + Z_BODY_HEIGHT/2, Z_ARM_WIDTH, Z_ARM_WIDTH, (unsigned char *)clear_rect_map);
+				GLCD_Bitmap (prev_zombie.x_pos + Z_ARM_WIDTH/2 + Z_BODY_WIDTH/2, prev_zombie.y_pos + Z_ARM_WIDTH + Z_BODY_HEIGHT, Z_ARM_WIDTH, Z_ARM_WIDTH, (unsigned char *)clear_rect_map);
+			}
+			
 			os_mut_release(&GLCD_mut);
-		
+			
+			//Get the distance to the human
 			x_dist = current_human.x_pos - prev_zombie.x_pos;
 			y_dist = current_human.y_pos - prev_zombie.y_pos;
 			
+			//Calculate the movement of the zombie in x and y directions
 			x_old = prev_zombie.x_pos;
 			y_old = prev_zombie.y_pos;
 			if(y_dist!=0){
 				xy_ratio = abs(x_dist/y_dist);
 				
 				delta_y = (int) ((int) prev_zombie.speed )/sqrt(1+xy_ratio*xy_ratio);
-				if(y_dist > 0) prev_zombie.y_pos += delta_y;
-				else prev_zombie.y_pos -= delta_y;
+				if(y_dist > 0) next_zombie.y_pos += delta_y;
+				else next_zombie.y_pos -= delta_y;
 				
 				if(delta_y) delta_x = (int) delta_y*xy_ratio;
 				else delta_x = ((int) prev_zombie.speed );
-				if(x_dist > 0) prev_zombie.x_pos += delta_x;
-				else prev_zombie.x_pos -= delta_x;
+				
+				if(x_dist > 0) next_zombie.x_pos += delta_x;
+				else next_zombie.x_pos -= delta_x;
+				
+				if(delta_x == 0){
+					if(y_dist > 0) new_arm_position = 3;
+					else new_arm_position = 7;
+				}
+				else if(delta_y == 0){
+					if(x_dist > 0) new_arm_position = 1;
+					else new_arm_position = 5;
+				}
+				else if(x_dist > 0){
+					if(y_dist > 0) new_arm_position = 2;
+					else new_arm_position = 8;
+				} else {
+					if(y_dist > 0) new_arm_position = 4;
+					else new_arm_position = 6;	
+				}
+				
 			}
 			else {
-				if(x_dist > 0) prev_zombie.x_pos += ((int) prev_zombie.speed );
-				else prev_zombie.x_pos -= ((int) prev_zombie.speed );
+				if(x_dist > 0){ 
+					next_zombie.x_pos += ((int) prev_zombie.speed );
+					new_arm_position = 1;
+				} else {
+					next_zombie.x_pos -= ((int) prev_zombie.speed );
+					new_arm_position = 5;
+				}
 			}
 			
-
+	
+			//Clear previous zombie
 			os_mut_wait(&GLCD_mut, 0xffff);
-			GLCD_Bitmap (prev_zombie.x_pos+Z_ARM_WIDTH, prev_zombie.y_pos+Z_ARM_WIDTH, Z_BODY_WIDTH, Z_BODY_HEIGHT, (unsigned char *)z_body_map); 
-		//	GLCD_Bitmap (prev_zombie.x_pos+ZOMBIE_WIDTH, prev_zombie.y_pos+ZOMBIE_HEIGHT, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
+ 			GLCD_Bitmap (prev_zombie.x_pos + Z_ARM_WIDTH, prev_zombie.y_pos + Z_ARM_WIDTH, Z_BODY_WIDTH, Z_BODY_HEIGHT, (unsigned char *)clear_rect_map);
 			os_mut_release(&GLCD_mut);
 			
+			//Draw zombie
+			os_mut_wait(&GLCD_mut, 0xffff);
+			GLCD_Bitmap (next_zombie.x_pos+Z_ARM_WIDTH, next_zombie.y_pos+Z_ARM_WIDTH, Z_BODY_WIDTH, Z_BODY_HEIGHT, (unsigned char *)z_body_map); 
+			os_mut_release(&GLCD_mut);
+			
+			os_dly_wait(1);
+
+			//Draw zombie again to avoid unintentional deletion
+			os_mut_wait(&GLCD_mut, 0xffff);
+			GLCD_Bitmap (next_zombie.x_pos+Z_ARM_WIDTH, next_zombie.y_pos+Z_ARM_WIDTH, Z_BODY_WIDTH, Z_BODY_HEIGHT, (unsigned char *)z_body_map); 
+			os_mut_release(&GLCD_mut);
+			
+			//Draw the new zombie arms
 		os_mut_wait(&GLCD_mut, 0xffff);
-		 if (y_old < prev_zombie.y_pos){
-				if (x_old > prev_zombie.x_pos){
-					GLCD_Bitmap (prev_zombie.x_pos , prev_zombie.y_pos+Z_ARM_HEIGHT+Z_BODY_HEIGHT/4, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
-					GLCD_Bitmap (prev_zombie.x_pos+Z_ARM_WIDTH+Z_BODY_WIDTH/4 , prev_zombie.y_pos+Z_ARM_HEIGHT+Z_BODY_HEIGHT, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
+		 if (y_old < next_zombie.y_pos){
+				if (x_old > next_zombie.x_pos){
+					GLCD_Bitmap (next_zombie.x_pos , next_zombie.y_pos+Z_ARM_HEIGHT+Z_BODY_HEIGHT/4, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
+					GLCD_Bitmap (next_zombie.x_pos+Z_ARM_WIDTH+Z_BODY_WIDTH/4 , next_zombie.y_pos+Z_ARM_HEIGHT+Z_BODY_HEIGHT, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
 				}
-				else if (x_old < prev_zombie.x_pos){
-					GLCD_Bitmap (prev_zombie.x_pos+Z_ARM_WIDTH+Z_BODY_WIDTH , prev_zombie.y_pos+Z_ARM_HEIGHT+Z_BODY_HEIGHT/4, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
-					GLCD_Bitmap (prev_zombie.x_pos+Z_ARM_WIDTH+Z_BODY_WIDTH/4 , prev_zombie.y_pos+Z_ARM_HEIGHT+Z_BODY_HEIGHT, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
+				else if (x_old < next_zombie.x_pos){
+					GLCD_Bitmap (next_zombie.x_pos+Z_ARM_WIDTH+Z_BODY_WIDTH , next_zombie.y_pos+Z_ARM_HEIGHT+Z_BODY_HEIGHT/4, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
+					GLCD_Bitmap (next_zombie.x_pos+Z_ARM_WIDTH+Z_BODY_WIDTH/4 , next_zombie.y_pos+Z_ARM_HEIGHT+Z_BODY_HEIGHT, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
 				}
 				else {
-					GLCD_Bitmap (prev_zombie.x_pos+Z_ARM_WIDTH+Z_BODY_WIDTH , prev_zombie.y_pos+Z_ARM_HEIGHT+Z_BODY_HEIGHT, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
-					GLCD_Bitmap (prev_zombie.x_pos , prev_zombie.y_pos+Z_ARM_HEIGHT+Z_BODY_HEIGHT, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
+					GLCD_Bitmap (next_zombie.x_pos+Z_ARM_WIDTH+Z_BODY_WIDTH , next_zombie.y_pos+Z_ARM_HEIGHT+Z_BODY_HEIGHT, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
+					GLCD_Bitmap (next_zombie.x_pos , next_zombie.y_pos+Z_ARM_HEIGHT+Z_BODY_HEIGHT, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
 				}
 			}
-			else if (y_old > prev_zombie.y_pos){
-				if (x_old > prev_zombie.x_pos){
-					GLCD_Bitmap (prev_zombie.x_pos+Z_ARM_WIDTH+Z_BODY_WIDTH/4 , prev_zombie.y_pos, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
-					GLCD_Bitmap (prev_zombie.x_pos , prev_zombie.y_pos+Z_ARM_HEIGHT+Z_BODY_HEIGHT/4, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
+			else if (y_old > next_zombie.y_pos){
+				if (x_old > next_zombie.x_pos){
+					GLCD_Bitmap (next_zombie.x_pos+Z_ARM_WIDTH+Z_BODY_WIDTH/4 , next_zombie.y_pos, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
+					GLCD_Bitmap (next_zombie.x_pos , next_zombie.y_pos+Z_ARM_HEIGHT+Z_BODY_HEIGHT/4, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
 				}
-				else if (x_old < prev_zombie.x_pos){
-					GLCD_Bitmap (prev_zombie.x_pos+Z_ARM_WIDTH+Z_BODY_WIDTH/4 , prev_zombie.y_pos, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
-					GLCD_Bitmap (prev_zombie.x_pos+Z_ARM_WIDTH+Z_BODY_WIDTH , prev_zombie.y_pos+Z_ARM_HEIGHT+Z_BODY_HEIGHT/4, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
+				else if (x_old < next_zombie.x_pos){
+					GLCD_Bitmap (next_zombie.x_pos+Z_ARM_WIDTH+Z_BODY_WIDTH/4 , next_zombie.y_pos, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
+					GLCD_Bitmap (next_zombie.x_pos+Z_ARM_WIDTH+Z_BODY_WIDTH , next_zombie.y_pos+Z_ARM_HEIGHT+Z_BODY_HEIGHT/4, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
 				}
 				else {
-					GLCD_Bitmap (prev_zombie.x_pos+Z_ARM_WIDTH+Z_BODY_WIDTH , prev_zombie.y_pos, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
-					GLCD_Bitmap (prev_zombie.x_pos , prev_zombie.y_pos, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
+					GLCD_Bitmap (next_zombie.x_pos+Z_ARM_WIDTH+Z_BODY_WIDTH , next_zombie.y_pos, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
+					GLCD_Bitmap (next_zombie.x_pos , next_zombie.y_pos, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
 				}
 			}
 			else {
-				if (x_old > prev_zombie.x_pos){
-					GLCD_Bitmap (prev_zombie.x_pos , prev_zombie.y_pos, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
-					GLCD_Bitmap (prev_zombie.x_pos , prev_zombie.y_pos+Z_ARM_HEIGHT+Z_BODY_HEIGHT, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
+				if (x_old > next_zombie.x_pos){
+					GLCD_Bitmap (next_zombie.x_pos , next_zombie.y_pos, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
+					GLCD_Bitmap (next_zombie.x_pos , next_zombie.y_pos+Z_ARM_HEIGHT+Z_BODY_HEIGHT, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
 				}
-				else if (x_old < prev_zombie.x_pos){
-					GLCD_Bitmap (prev_zombie.x_pos+Z_ARM_WIDTH+Z_BODY_WIDTH , prev_zombie.y_pos, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
-					GLCD_Bitmap (prev_zombie.x_pos+Z_ARM_WIDTH+Z_BODY_WIDTH , prev_zombie.y_pos+Z_ARM_HEIGHT+Z_BODY_HEIGHT, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
+				else if (x_old < next_zombie.x_pos){
+					GLCD_Bitmap (next_zombie.x_pos+Z_ARM_WIDTH+Z_BODY_WIDTH , next_zombie.y_pos, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
+					GLCD_Bitmap (next_zombie.x_pos+Z_ARM_WIDTH+Z_BODY_WIDTH , next_zombie.y_pos+Z_ARM_HEIGHT+Z_BODY_HEIGHT, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
 				}
 				else {
-					GLCD_Bitmap (prev_zombie.x_pos , prev_zombie.y_pos, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
-					GLCD_Bitmap (prev_zombie.x_pos , prev_zombie.y_pos+Z_ARM_HEIGHT+Z_BODY_HEIGHT, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
+					GLCD_Bitmap (next_zombie.x_pos , next_zombie.y_pos, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
+					GLCD_Bitmap (next_zombie.x_pos , next_zombie.y_pos+Z_ARM_HEIGHT+Z_BODY_HEIGHT, Z_ARM_WIDTH, Z_ARM_HEIGHT, (unsigned char *)z_arm_map);
 				}
 			}
 			os_mut_release(&GLCD_mut);
 			
+			//Update position of the Zombie
 			os_mut_wait(&zombies_mut, 0xffff);
-				zombies_array[zombie_index].x_pos = prev_zombie.x_pos;
-				zombies_array[zombie_index].y_pos = prev_zombie.y_pos;
+				zombies_array[zombie_index].x_pos = next_zombie.x_pos;
+				zombies_array[zombie_index].y_pos = next_zombie.y_pos;
+				zombies_array[zombie_index].arm_positions = new_arm_position;
+				if(zombies_array[zombie_index].speed < 8.0)
 				zombies_array[zombie_index].speed += 0.02 ;
 			os_mut_release(&zombies_mut);
 
@@ -671,7 +844,7 @@ __task void zombie_task( void* void_ptr ){
 //Controls Button action
 __task void button_task( void *void_ptr){
 	human_t local_human;
-	int i,j,k;
+	int i;
 	float total_dist;
 	int x_dist;
 	int y_dist;
@@ -685,38 +858,46 @@ __task void button_task( void *void_ptr){
 		#ifdef PRINT_ENABLE_LOOPS
 			printf("Button Task is WAITING!\n");
 		#endif
-		
+
 		os_sem_wait(&button_sem, 0xffff);
-		
 		#ifdef PRINT_ENABLE
 			printf("Bomb detonated!\n");
 		#endif
 		
+		//Decrement the number of bombs the human has
 		os_mut_wait(&human_mut, 0xffff);
 		local_human = human;
+		(human.bombs)--;
 		os_mut_release(&human_mut);
-	
+		
 		//Animate explosion
+		os_mut_wait(&GLCD_mut, 0xffff);
 		for (i = 0; i < 81 ; i++){
-			if (bomb_map[i] == 0){
-				GLCD_Bitmap(local_human.x_pos-BOMB_RANGE+ BOMB_D_WIDTH*(i%9+1) , local_human.y_pos-BOMB_RANGE+BOMB_D_HEIGHT*(floor(i/9)+1) , BOMB_D_WIDTH, BOMB_D_HEIGHT, (unsigned char *)bomb_w_map);
-			}
-			else if (bomb_map[i] == 1){
-				GLCD_Bitmap (local_human.x_pos-BOMB_RANGE+ BOMB_D_WIDTH*(i%9+1) , local_human.y_pos-BOMB_RANGE+BOMB_D_HEIGHT*(floor(i/9)+1) , BOMB_D_WIDTH, BOMB_D_HEIGHT, (unsigned char *)bomb_r_map);
-			}
-			else if (bomb_map[i] == 2){
-				GLCD_Bitmap (local_human.x_pos-BOMB_RANGE+ BOMB_D_WIDTH*(i%9+1) , local_human.y_pos-BOMB_RANGE+BOMB_D_HEIGHT*(floor(i/9)+1) , BOMB_D_WIDTH, BOMB_D_HEIGHT, (unsigned char *)bomb_o_map);				 
-			}
-			else if (bomb_map[i] == 3){
-				GLCD_Bitmap (local_human.x_pos-BOMB_RANGE+ BOMB_D_WIDTH*(i%9+1) , local_human.y_pos-BOMB_RANGE+BOMB_D_HEIGHT*(floor(i/9)+1) , BOMB_D_WIDTH, BOMB_D_HEIGHT, (unsigned char *)bomb_y_map);
-			}
+			
+			if(local_human.y_pos-BOMB_RANGE+BOMB_D_HEIGHT*(floor(i/9)+1) < 231){
+				if (bomb_map[i] == 0){
+					GLCD_Bitmap(local_human.x_pos-BOMB_RANGE+ BOMB_D_WIDTH*(i%9+1) , local_human.y_pos-BOMB_RANGE+BOMB_D_HEIGHT*(floor(i/9)+1) , BOMB_D_WIDTH, BOMB_D_HEIGHT, (unsigned char *)bomb_w_map);
+				}
+				else if (bomb_map[i] == 1){
+					GLCD_Bitmap (local_human.x_pos-BOMB_RANGE+ BOMB_D_WIDTH*(i%9+1) , local_human.y_pos-BOMB_RANGE+BOMB_D_HEIGHT*(floor(i/9)+1) , BOMB_D_WIDTH, BOMB_D_HEIGHT, (unsigned char *)bomb_r_map);
+				}
+				else if (bomb_map[i] == 2){
+					GLCD_Bitmap (local_human.x_pos-BOMB_RANGE+ BOMB_D_WIDTH*(i%9+1) , local_human.y_pos-BOMB_RANGE+BOMB_D_HEIGHT*(floor(i/9)+1) , BOMB_D_WIDTH, BOMB_D_HEIGHT, (unsigned char *)bomb_o_map);				 
+				}
+				else if (bomb_map[i] == 3){
+					GLCD_Bitmap (local_human.x_pos-BOMB_RANGE+ BOMB_D_WIDTH*(i%9+1) , local_human.y_pos-BOMB_RANGE+BOMB_D_HEIGHT*(floor(i/9)+1) , BOMB_D_WIDTH, BOMB_D_HEIGHT, (unsigned char *)bomb_y_map);
+				}
 		}
+		}
+		os_mut_release(&GLCD_mut);
+
 				
 				
 		#ifdef PRINT_ENABLE
 			printf("Got human\n");
 		#endif	
 		
+		//Detect the zombies that the bomb killed
 		for( i = num_zombies-1 ; i >= 0 ; i-- ){
 			#ifdef PRINT_ENABLE
 				printf("Calculating Distance\n");
@@ -727,6 +908,7 @@ __task void button_task( void *void_ptr){
 			total_dist = sqrt( x_dist*x_dist + y_dist*y_dist );
 			
 			if( total_dist < BOMB_RANGE){
+					os_dly_wait(1);
 					#ifdef PRINT_ENABLE
 							printf("Killing In-Range Zombie\n");
 					#endif	
@@ -734,7 +916,8 @@ __task void button_task( void *void_ptr){
 			}
 			
 		}
-			os_dly_wait(10);
+			os_dly_wait(8);
+		//Clear the bomb
 			for (i = 0; i < 81 ; i++){
 					GLCD_Bitmap (local_human.x_pos-BOMB_RANGE+ BOMB_D_WIDTH*(i%9+1) , local_human.y_pos-BOMB_RANGE+BOMB_D_HEIGHT*(floor(i/9)+1) , BOMB_D_WIDTH, BOMB_D_HEIGHT, (unsigned char *)bomb_w_map);				 
 			}
@@ -746,60 +929,105 @@ __task void button_task( void *void_ptr){
 	
 }
 
+__task void LED_task (void *void_ptr){
+	human_t local_human;
 
+	while(1){
+		//Output correct number of bombs to LEDs
+		local_human = human;
+		LED_Out(local_human.bombs);
+	}
+}
+
+__task void collision_detect_task(void *void_ptr){
+	while(1){
+		os_sem_wait(&collision_detect_sem, 0xffff);
+
+		detect_collision();
+		
+		//Let base thread know the current iteration is done.
+		os_sem_send(&iteration_sem);
+	}
+}
+
+__task void main_menu_task (void *void_ptr){
+		bool wait_game = true;
+	while(wait_game){ ///////////////////////////////////////////
+		if (button_pressed){
+			button_pressed = 0;
+			wait_game = false;
+		}
+	}
+	  GLCD_Clear(0x8C71);                         /* Clear graphical LCD display   */
+  GLCD_SetBackColor(0x8C71);
+  GLCD_SetTextColor(Red);
+	can_bomb = true; 
+	os_tsk_delete_self();
+	
+}
+	
 //Base task
 __task void base_task( void ) {
 		int i;
 		signed int zombie_index;
 		unsigned int zombie_counter = 0;
-		unsigned int pickup_counter = 0;
+		unsigned int z_speed_counter = 0;
+	
+	
+		int zombie_spawn_freq = 75;
 		//initialize all variables
 
-		os_tsk_prio_self( 11 );
+		os_tsk_prio_self( 12 );
 	
 		#ifdef PRINT_ENABLE
 			printf("Initializing...\n");
 		#endif
 	
-		//Initialize semaphores
+		//Initialize semaphores/mutexes
 	  os_sem_init(&human_task_sem, 0);
+		os_sem_init(&pickup_task_sem, 0);
 		os_mut_init(&human_mut);
 		os_mut_init(&GLCD_mut);
+		os_mut_init(&LED_mut);
 		os_mut_init(&joystick_mut);
 		os_sem_init(&button_sem, 0);
+		os_sem_init(&collision_detect_sem,0);
+		os_sem_init(&iteration_sem,1);
 	
 		for(i=0; i< MAX_ZOMBIES; i++){
 			os_sem_init(&zombie_task_sem[i], 0);
 		}
 	
-		//Initialize Variables
-	
-	  //Initialize human
-		human_init();
-	
-		
+
 	  //Initialize First Zombie
 		zombie_index = zombie_init(); //this will be zero
 		
-		// start other tasks
-		os_tsk_create_ex( human_task, 11, &human );
-		zombie_tasks[zombie_index] = os_tsk_create_ex( zombie_task, 11, (void *) &zombie_index );
-		os_tsk_create_ex( button_task, 11, &human );
+		// Go to start screen
+		os_tsk_create_ex(main_menu_task, 13, NULL);
 		
-		while(1){
-			unsigned long int i;
-			unsigned long int seed;
+		//Initialize human
+		human_init();
+		
+		//Initialize other tasks
+		human_tsk = os_tsk_create_ex( human_task, 11,NULL );
+		zombie_tasks[zombie_index] = os_tsk_create_ex( zombie_task, 11, (void *) &zombie_index );
+		button_tsk = os_tsk_create_ex( button_task, 11, NULL );
+		pickup_tsk = os_tsk_create_ex( pickup_task, 11, NULL );
+		led_tsk = os_tsk_create_ex( LED_task, 8, NULL );
+		collision_tsk = os_tsk_create_ex( collision_detect_task, 9, NULL );
+		
+		while(game_playing){
 			
 		#ifdef PRINT_ENABLE_LOOPS
 			printf("In Base Loop!\n");
-			printf("--\n");
-			printf("---\n");
+			printf("----\n");
 		#endif
 			
+			os_dly_wait(10);
+			os_sem_wait(&iteration_sem, 0xffff);
 
-			
-			for(i=0;i < 2000000; i++); //timer
-			if(zombie_counter < 50) zombie_counter++;
+			//Spawn a new zombie after a certain number of iterations
+			if(zombie_counter < zombie_spawn_freq) zombie_counter++;
 			else {
 				zombie_counter = 0;
 				if(num_zombies < MAX_ZOMBIES){
@@ -811,20 +1039,19 @@ __task void base_task( void ) {
 					}
 					
 				}
+				if(zombie_spawn_freq > 25) zombie_spawn_freq -= 10;
 			}
 			
-			if(pickup_counter < 100) pickup_counter++;
+			//Increase the speed of zombies after a certain number of iterations
+			if(z_speed_counter < 150) z_speed_counter++;
 			else {
-				pickup_counter = 0;
-				if(num_zombies < MAX_ZOMBIES){
-
-				}
+				z_speed_counter = 0;
+				if(max_zombie_speed < 6) max_zombie_speed += 0.3;
+				if(min_zombie_speed < 3) min_zombie_speed += 0.1;
 			}
-			//Button Interrupt bomb: Each zombie checks if it is within a certain distance of the human.
-			// If they are within the distance, kill themselves.
-			
-			
-			//Post to update position and stats
+
+			//Start all other tasks
+			os_sem_send(&pickup_task_sem);
 			os_sem_send(&human_task_sem);
 			for(i=0;i< num_zombies; i++){
 				#ifdef PRINT_ENABLE_LOOPS
@@ -834,63 +1061,104 @@ __task void base_task( void ) {
 			}
 			
 			//detect collision between human and zombies
-			detect_collision();
+			os_sem_send(&collision_detect_sem);
 			
-			if(bomb_detonated){
+			//If the button was pressed, wake up the tast to explose the bomb
+			if(button_pressed && can_bomb){
 				#ifdef PRINT_ENABLE_LOOPS
 					printf("Sending Bomb Semaphore!\n");
 				#endif
-				bomb_detonated = 0;
-				os_sem_send(&button_sem);
+				button_pressed = 0;
+				if(human.bombs > 0){
+					os_sem_send(&button_sem);
+				}
 			}
-			
-			
-			
 		}
-	
-	
-}
+		//GAME OVER
+		
+		//Kill all zombies
+		for( i= num_zombies-1 ; i >= 0; i--){
+				os_dly_wait(1);
+				kill_zombie(i);
+		}
+		
+		//Delete all takss
+		os_tsk_delete(pickup_tsk);
+		os_tsk_delete(human_tsk);
+		os_tsk_delete(button_tsk);
+		os_tsk_delete(led_tsk);
+		os_tsk_delete(collision_tsk);
 
+		GLCD_Clear(Black);                         /* Clear graphical LCD display   */
+		GLCD_SetBackColor(Black);
+		GLCD_SetTextColor(Red);
+		////////////////////////////////01234567890123456789
+		GLCD_DisplayString(1, 0, __FI, "       U  DED       ");
+		GLCD_DisplayString(4, 0, __FI, "You have killed     ");
+ 		if (zombies_killed == 1){
+ 			GLCD_DisplayString(5, 0, __FI, "       zombie       ");
+ 		}
+ 		else {
+ 			GLCD_DisplayString(5, 0, __FI, "       zombies      ");
+ 		}
+		sprintf(killed, "%d", zombies_killed);    
+		GLCD_DisplayString(4,17,__FI,(unsigned char *)killed);
+
+		GLCD_Bitmap (20,22 , 20, 20, (unsigned char *)skull_map);
+		GLCD_Bitmap (280,22 , 20, 20, (unsigned char *)skull_map);
+		for (i = 20; i<=280 ;i += 20){
+			GLCD_Bitmap (i,44 , 20, 20, (unsigned char *)skull_map);
+			GLCD_Bitmap (i,0 , 20, 20, (unsigned char *)skull_map);
+		}
+}
 
 /*----------------------------------------------------------------------------
   Main Program
  *----------------------------------------------------------------------------*/
 int main (void) {
-	int i;
-	int j;
+	int i,j;
 	printf("The peripherals only work if this statement is here.\n");
 
 	
 	SystemInit();
 	SystemCoreClockUpdate();
 	
+	//Initialize
 	LED_Init();                  
   SER_Init();                               
   ADC_Init();
 	INT0_Init();
 	GLCD_Init(); /* Initialize graphical LCD      */
-
-  GLCD_Clear(White);                         /* Clear graphical LCD display   */
-  GLCD_SetBackColor(White);
-  GLCD_SetTextColor(Blue);
+			
+  GLCD_Clear(Black);                         /* Clear graphical LCD display   */
+  GLCD_SetBackColor(Black);
+  GLCD_SetTextColor(Red);
 	
-	
-	//Initialize shapes
-// 	for (i =0;i < 10; i++){
-// 		for(j=0; j <20 ; j++){
-// 			if(i == 0 || i == 9 || j == 0 || j == 19)
-// 			zombie_map[i*j] = Black;
-// 			else
-// 				zombie_map[i*j] = Red;
-// 		}
+	//Start Screen
+	//                              01234567890123456789
+  GLCD_DisplayString(0, 0, __FI, " ZOMBIE APOCALYPSE! ");
+	GLCD_DisplayString(2, 0, __FI, "The zombies are here");
+	GLCD_DisplayString(3, 0, __FI, "  How many can you  ");
+	GLCD_DisplayString(4, 0, __FI, " take down with you?");
 
+	GLCD_Bitmap (5,180 , 47, 55, (unsigned char *)hand_map);
+	GLCD_Bitmap (55,135 , 47, 55, (unsigned char *)hand_map);
+	GLCD_Bitmap (70,193 , 47, 55, (unsigned char *)hand_map);
+	GLCD_Bitmap (120,160 , 47, 55, (unsigned char *)hand_map);
+	GLCD_Bitmap (180,122 , 47, 55, (unsigned char *)hand_map);
+	GLCD_Bitmap (190,190 , 47, 55, (unsigned char *)hand_map);
+	GLCD_Bitmap (250,175 , 47, 55, (unsigned char *)hand_map);
+
+	
+	//Initialize Bitmaps
 	for (i = 0; i < 100; i++){
 		gun_map[i] = Black;
 		human_map[i] = Green;
-		bomb_w_map[i] = White;
+		bomb_w_map[i] = 0x8C71;
 		bomb_r_map[i] = Red;
 		bomb_o_map[i] = 0xFC60;
 		bomb_y_map[i] = Yellow;
+		
 	}
 
 	for (i =0;i < 10; i++){
@@ -919,27 +1187,18 @@ int main (void) {
 		}
 	}
 	for (i = 0; i < 400; i++){
-		clear_rect_map[i] = White;
+		clear_rect_map[i] = 0x8C71;//0xF5A0
 	}
 	
 	for (i = 0; i < PICKUP_AREA; i++){
-		pickup_map[i] = Purple;
+		pickup_map[i] = Blue;
 	}
-	
 
-	
-	//Initialize all LEDs to on
-	for (i = 0; i < 8; i++){
-		LED_On(i);
-	}
 	#ifdef PRINT_ENABLE
 	printf("test");
 	#endif
-	
 	os_sys_init( base_task );
 
-	while ( 1 ) {
-		// Endless loop
-	}
-//   SysTick_Config(SystemCoreClock/10);       /* Generate interrupt each 1 ms */	
+	while ( 1 ) {}
+		
 }

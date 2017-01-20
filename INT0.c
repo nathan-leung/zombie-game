@@ -13,9 +13,7 @@
 /*----------------------------------------------------------------------------
   initialize LED Pins
  *----------------------------------------------------------------------------*/
-uint16_t INT0_val = 0;
-uint8_t INT0_done = 0;
-volatile int bomb_detonated = 0;
+volatile int button_pressed = 0;
 
 void INT0_Init (void) {
 
@@ -47,7 +45,8 @@ void EINT3_IRQHandler() {
 		LPC_GPIOINT->IO2IntClr |= (1 << 10); // clear interrupt condition
 		
 		//set flag
-		bomb_detonated = 1;
+
+		button_pressed = 1;
 		
 	}
 }

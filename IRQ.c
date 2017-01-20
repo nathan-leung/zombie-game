@@ -16,7 +16,6 @@
 #include "LPC17xx.H"                         /* LPC17xx definitions           */
 #include "LED.h"
 #include "ADC.h"
-#include "flags.h"
 
 uint8_t  clock_1s;                           /* Flag activated each second    */
 
@@ -24,7 +23,7 @@ uint8_t  clock_1s;                           /* Flag activated each second    */
 /*----------------------------------------------------------------------------
   Systick Interrupt Handler
   SysTick interrupt happens every 10 ms
-//  *----------------------------------------------------------------------------*/
+ *----------------------------------------------------------------------------*/
 // void SysTick_Handler (void) {
 //   static unsigned long ticks = 0;
 //   static unsigned long timetick;
@@ -36,12 +35,12 @@ uint8_t  clock_1s;                           /* Flag activated each second    */
 //   }
 
 //   /* Blink the LEDs depending on ADC_ConvertedValue                           */
-// //   if (timetick++ >= (AD_last >> 8)) {
-// //     timetick   = 0;
-// //     leds     <<= 1;
-// //     if (leds > (1 << LED_NUM)) leds = 0x01;
-// //     LED_Out (leds);
-// //   }
-// 	
-// 	setSysFlag();
+//   if (timetick++ >= (AD_last >> 8)) {
+//     timetick   = 0;
+//     leds     <<= 1;
+//     if (leds > (1 << LED_NUM)) leds = 0x01;
+//     //LED_Out (leds);
+//   }
+
+//   ADC_StartCnv();
 // }
