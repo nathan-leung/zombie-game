@@ -27,34 +27,6 @@
 #include <stdlib.h>
 #include "INT0.h"
 
-
-
-/****************** TO DO LIST **********************/
-//Fix Zombies that aren't being erased when killed
-//Check if mutexes are needed for assignments
-//Make a "draw task" dedicated to drawing everything? (Separates drawing from game logic)
-//Score (Time + Number of Zombies Killed * 100)?
-//draw floor
-//zombie collision
-//Draw Zombies overtop of pickups
-//Zombies drop things when killed? (nah) maybe blood spill
-//Reinforced Zombies that take two explosions to kill but move slower
-//Animate Zombies spawning
-//Change difficulty: make more zombies spawn but have them go slower?
-
-
-/***************** BUGS ******************************/
-//CRASHES AT > 7 Zombies
-//Killing a lot of zombies at once causes the system to crash
-//zombie clears rect goes over other
-//double zombie spawn
-//Handle explosion at the same time a zombie touches you. -> explosion
-//Game crashes if you die with a large number of zombies on the field
-// sometimes zombie picture doesnt get removed / can be fixed by clearing whole screen
-// clock slowdown?
-// bomb crosses over edge to other side (try exploding near side with serial cable)
-
-
 /***************** MACROS ************************/
 #define __FI        1                       /* Font index 16x24               */
 
@@ -114,7 +86,6 @@ typedef struct {
 typedef struct {
 	uint16_t x_pos;
 	uint16_t y_pos;
-	//int height;
 	uint8_t arm_positions;
 	float speed;
 } zombie_t;
@@ -125,7 +96,6 @@ typedef struct {
 	uint16_t y_pos;
 } pickup_t;
 
-//TODO: Maybe a struct which holds the array of zombies AND num_zombies variable
 
 /****************** GLOBAL VARIABLES *******************/
 //BITMAPS
